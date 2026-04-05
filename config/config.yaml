@@ -1,0 +1,30 @@
+# Vision Navigation System Configuration
+
+system:
+  name: "智慧視障輔助導航系統"
+  version: "0.1.0"
+  language: "zh-TW"
+
+camera:
+  index: 1
+  resolution: [640, 480]
+  fps: 30
+
+navigation:
+  grid_size: 0.5  # 公尺
+  safety_distance: 1.0  # 公尺
+  warning_distance: 3.0  # 公尺
+
+voice:
+  rate: 150  # 說話速度
+  volume: 1.0
+  voice: "zh-TW"
+
+obstacle_detection:
+  model: "yolov8n.pt"  # TODO: 替換為實際模型
+  confidence: 0.5
+
+ai:
+  provider: "openclaw-ollama"
+  endpoint: "http://127.0.0.1:11434/api/generate"
+  model: "gemini-3-flash-preview"
