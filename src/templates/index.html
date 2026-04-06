@@ -67,6 +67,7 @@
         const ctx = canvas.getContext('2d');
 
         let isRunning = false;
+        let isAnalyzing = false;  // 【新增】檢查是否正在等待伺服器回應
         let analyzeInterval = null;
 
         // 系統內建 TTS 語音發聲
@@ -98,14 +99,18 @@
 
         // 把當前畫面拍下來送到電腦的 API
         async function captureAndAnalyze() {
-            if (!isRunning) return;
+            // 如果系統暫停，或是上一個運算還沒結束，就不排隊發送新照片！
+            if (!isRunning || isAnalyzing) return;
             
-            // 將畫面畫到 canvas，縮小解析度即可，以降低 4G 網路負載與延遲
-            canvas.width = 640;
-            canvas.height = 480;
+            isAnalyzing = true;
+            
+            // 【優化】將畫面縮短至 320x240，可以大幅降低傳輸時間與 LLM 視覺模組解析的 Token 數量
+            canvas.width = 320;
+            canvas.height = 240;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            // 【優化】把 JPG 壓縮比調降到 0.6 減少檔案大小
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
             const base64Data = dataUrl.split(',')[1];
 
             try {
@@ -115,9 +120,9 @@
                     body: JSON.stringify({ image_b64: base64Data })
                 });
 
-                // 【修復】這裡等待了數秒鐘 (因網路或大腦推理延遲)
                 // 當收到回應時，如果使用者已經按下了「停止導航」，就直接把這包遲來的結果丟掉！
                 if (!isRunning) {
+                    isAnalyzing = false;
                     return;
                 }
 
@@ -132,6 +137,9 @@
                 }
             } catch (err) {
                 console.error("上傳大腦分析失敗:", err);
+            } finally {
+                // 收到回應或出錯後，解鎖讓下一張照片可以發送
+                isAnalyzing = false;
             }
         }
 
@@ -145,8 +153,8 @@
                 
                 speak("導航系統已經啟動");
                 startCamera().then(() => {
-                    // 每 3 秒定時擷取並送出畫面
-                    analyzeInterval = setInterval(captureAndAnalyze, 3000);
+                    // 每秒偵測一次，但因為上面有了 isAnalyzing 鎖，所以實際上會等算完才拍下一張
+                    analyzeInterval = setInterval(captureAndAnalyze, 1000);
                 });
             } else {
                 isRunning = false;
