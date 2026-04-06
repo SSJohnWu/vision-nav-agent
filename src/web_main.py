@@ -4,20 +4,25 @@
 """
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 import base64
 import numpy as np
 import cv2
 import uvicorn
 import os
 import sys
+import time
 
 # 讓系統找得到同一個資料夾下的其他模組
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from src.agent.navigation_agent import NavigationAgent
 
 app = FastAPI(title="Vision Nav Mobile API")
-# 初始化 OpenClaw 決策大腦 (保持使用同一份程式碼)
+# 初始化 OpenClaw 決策大腦
 agent = NavigationAgent()
+
+class ImagePayload(BaseModel):
+    image_b64: str
 
 @app.get("/")
 async def get_index():
@@ -28,28 +33,30 @@ async def get_index():
     return HTMLResponse(content=html_content)
 
 @app.post("/api/analyze")
-async def analyze_frame(request: Request):
+def analyze_frame(payload: ImagePayload):
     """
-    接收手機發來的 Base64 照片字串，解碼還原成 OpenCV 圖，再送給 OpenClaw 大腦分析。
+    接收手機發來的 Base64 照片字串，傳給大腦分析。
+    使用 def (而非 async def) 讓 FastAPI 自動將耗時任務放入 ThreadPool 中，避免卡死伺服器！
     """
+    start_t = time.time()
     try:
-        data = await request.json()
-        b64_img = data.get("image_b64")
+        b64_img = payload.image_b64
         if not b64_img:
             return {"warning": "沒有接收到影像資料"}
 
-        # 將 Base64 解回 Bytes 陣列
         img_bytes = base64.b64decode(b64_img)
-        # 用 NumPy 轉回矩陣
         np_arr = np.frombuffer(img_bytes, dtype=np.uint8)
-        # OpenCV 載入顏色矩陣 (BGR)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-        # 送給導航代理去判斷
+        print(f"[效能診斷] 1. 前端影像接收與解碼完畢: {time.time() - start_t:.2f} 秒")
+        
+        t_yolo = time.time()
         visual_data = {"frame": frame}
         decision = agent.analyze_environment(visual_data)
         
-        # 不要由電腦端發起語音了！把結果字串包回 JSON 丟回給手機自己發音
+        print(f"[效能診斷] 2. 總決策花費時間 (YOLO + Ollama): {time.time() - t_yolo:.2f} 秒")
+        print(f"[效能診斷] =========================================")
+        
         return {
             "warning": decision.get("warning"),
             "action": decision.get("action")
