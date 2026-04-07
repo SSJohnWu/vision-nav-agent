@@ -36,7 +36,7 @@ class NavigationAgent:
                 self.endpoint = ai_config.get('endpoint', 'http://127.0.0.1:11434/api/generate')
                 self.model_name = ai_config.get('model', 'gemini-3-flash-preview')
         except Exception:
-            self.endpoint = 'http://127.0.0.1:11434/api/generate'
+            self.endpoint = 'http://127.0.0.1:11434/api/genesrate'
             self.model_name = 'gemini-3-flash-preview'
 
         logger.info(f"Navigation Agent initialized. OpenClaw Endpoint: {self.endpoint}")
