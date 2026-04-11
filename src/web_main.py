@@ -13,16 +13,19 @@ import os
 import sys
 import time
 
-# 讓系統找得到同一個資料夾下的其他模組
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from src.agent.navigation_agent import NavigationAgent
+from agent.navigation_agent import NavigationAgent
+from audio.voice_interface import VoiceInterface
 
 app = FastAPI(title="Vision Nav Mobile API")
 # 初始化 OpenClaw 決策大腦
 agent = NavigationAgent()
+voice = VoiceInterface()
 
 class ImagePayload(BaseModel):
     image_b64: str
+
+class CommandPayload(BaseModel):
+    command: str
 
 @app.get("/")
 async def get_index():
@@ -64,6 +67,48 @@ def analyze_frame(payload: ImagePayload):
         
     except Exception as e:
         return {"warning": f"電腦端系統錯誤: {str(e)}"}
+
+@app.post("/api/command")
+def process_command(payload: CommandPayload):
+    """
+    (舊版) 接收手機端以瀏覽器 Web Speech API 辨識後傳回的文字指令
+    """
+    cmd = payload.command
+    print(f"\n" + "!"*40)
+    print(f"[🟢 電腦伺服器收到手機文字語音] 🗣️: {cmd}")
+    print("!"*40 + "\n")
+    voice.speak(f"手機端傳來指令：{cmd}")
+    return {"reply": f"手機已接受指令：{cmd}。"}
+
+@app.post("/api/command_audio")
+async def process_audio_command(request: Request):
+    """
+    (新版) 接收前端純 JS 編碼的 WAV 音軌二進制檔案，後端直接送 Google STT
+    """
+    audio_data = await request.body()
+    print(f"\n[⬇️ 伺服器收到純音訊] 大小: {len(audio_data)} bytes")
+    
+    import speech_recognition as sr
+    import io
+    
+    recognizer = sr.Recognizer()
+    try:
+        with sr.AudioFile(io.BytesIO(audio_data)) as source:
+            audio = recognizer.record(source)
+            text = recognizer.recognize_google(audio, language="zh-TW")
+            
+            print(f"\n" + "!"*40)
+            print(f"[🔴 後端錄音直出解析結果] 🗣️: {text}")
+            print("!"*40 + "\n")
+            
+            voice.speak(f"收到指令：{text}")
+            return {"reply": f"系統收到指令：{text}", "text": text}
+    except sr.UnknownValueError:
+        print("[🔴 後端辨識失敗] 聽不清楚或沒有講話")
+        return {"reply": "聽不清楚，請再講一次", "text": ""}
+    except Exception as e:
+        print(f"[🔴 後端辨識異常] {e}")
+        return {"reply": "連線辨識系統失敗", "text": ""}
 
 if __name__ == "__main__":
     print("\n" + "="*50)

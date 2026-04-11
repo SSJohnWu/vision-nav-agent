@@ -43,6 +43,8 @@ class VisionNavSystem:
         self.voice.speak("導航系統已啟動")
         logger.info("Vision Navigation System started")
         
+        last_spoken_warning = ""
+        
         # 啟動相機
         try:
             self.camera.start()
@@ -62,21 +64,29 @@ class VisionNavSystem:
                 # 為了開發測試，將影像顯示在視窗上
                 cv2.imshow("Vision Nav Agent (Press 'q' to exit)", frame)
                 
-                # 2. 將影像傳遞給 Agent 大腦做決策判斷
-                # (先假裝將 frame 包進 dict，之後依據模型需求再作調整)
+                # 2. 最即時無延遲的方案：影片來一幀，YOLO 分析一幀 (無鎖頻)
                 visual_data = {"frame": frame}
                 decision = self.agent.analyze_environment(visual_data)
                 
-                # 3. 根據決策判斷是否需要發用語音
+                # 3. 根據決策判斷發用語音（避開毫秒級重複廣播相同的字串）
                 target_warning = decision.get("warning")
-                if target_warning:
+                if target_warning and target_warning != last_spoken_warning:
                     self.voice.speak(target_warning)
+                    last_spoken_warning = target_warning
+                elif target_warning is None:
+                    # 前方已清空時，重置廣播紀錄
+                    last_spoken_warning = ""
                 
-                # 聽取鍵盤指令，按下 'q' 則退出迴圈
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                # 聽取鍵盤指令，按下 'q' 則退出迴圈，按下 'v' 則啟動語音輸入
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
                     logger.info("使用者按下 q 鍵停止系統")
                     break
-                    
+                elif key == ord('v'):
+                    self.voice.speak("語音輸入已啟動")
+                    user_cmd = self.voice.listen()
+                    if user_cmd:
+                        self.voice.speak(f"您說了：{user_cmd}。目前語音指令分析功能尚在開發中。")
         except KeyboardInterrupt:
             logger.info("使用者透過 Ctrl+C 強制終止")
         finally:

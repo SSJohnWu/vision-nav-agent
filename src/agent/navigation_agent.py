@@ -12,8 +12,7 @@ import cv2
 import sys
 
 # 載入我們的 YOLO 混合模型技能
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from src.vision.obstacle_detector import ObstacleDetector
+from vision.obstacle_detector import ObstacleDetector
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +47,6 @@ class NavigationAgent:
         frame = visual_data.get("frame")
         if frame is None:
             return {"action": "forward", "warning": None, "confidence": 0.0}
-
-        # 冷卻限制
-        current_time = time.time()
-        if (current_time - self.last_api_call) < self.cooldown_seconds:
-            return {"action": "forward", "warning": None, "confidence": 0.0, "cooldown": True}
-            
-        self.last_api_call = current_time
 
         try:
             logger.info("呼叫 YOLO-World 開放詞彙先鋒進行掃描...")
