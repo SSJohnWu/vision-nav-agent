@@ -15,17 +15,24 @@ import time
 
 from agent.navigation_agent import NavigationAgent
 from audio.voice_interface import VoiceInterface
+from vision.vision_analyzer import VisionAnalyzer
 
 app = FastAPI(title="Vision Nav Mobile API")
 # 初始化 OpenClaw 決策大腦
 agent = NavigationAgent()
 voice = VoiceInterface()
+vision_analyzer = VisionAnalyzer()
 
 class ImagePayload(BaseModel):
     image_b64: str
 
 class CommandPayload(BaseModel):
     command: str
+
+class PhotoCommandPayload(BaseModel):
+    """拍照指令：包含語音辨識文字和截圖"""
+    text: str
+    image_b64: str
 
 @app.get("/")
 async def get_index():
@@ -57,7 +64,7 @@ def analyze_frame(payload: ImagePayload):
         visual_data = {"frame": frame}
         decision = agent.analyze_environment(visual_data)
         
-        print(f"[效能診斷] 2. 總決策花費時間 (YOLO + Ollama): {time.time() - t_yolo:.2f} 秒")
+        print(f"[效能診斷] 2. 總決策花費時間 (YOLO + OpenClaw): {time.time() - t_yolo:.2f} 秒")
         print(f"[效能診斷] =========================================")
         
         return {
@@ -68,41 +75,69 @@ def analyze_frame(payload: ImagePayload):
     except Exception as e:
         return {"warning": f"電腦端系統錯誤: {str(e)}"}
 
-@app.post("/api/command")
-def process_command(payload: CommandPayload):
+@app.post("/api/photo")
+async def process_photo_command(payload: PhotoCommandPayload):
     """
-    (舊版) 接收手機端以瀏覽器 Web Speech API 辨識後傳回的文字指令
+    接收截圖 + 語音指令，進行商品辨識
     """
-    cmd = payload.command
-    print(f"\n" + "!"*40)
-    print(f"[🟢 電腦伺服器收到手機文字語音] 🗣️: {cmd}")
-    print("!"*40 + "\n")
-    voice.speak(f"手機端傳來指令：{cmd}")
-    return {"reply": f"手機已接受指令：{cmd}。"}
+    print(f"\n[📸 收到拍照指令] 文字: {payload.text}")
+    voice.speak("收到，正在分析商品")
+
+    try:
+        # 解碼圖片
+        img_bytes = base64.b64decode(payload.image_b64)
+        np_arr = np.frombuffer(img_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if frame is None:
+            voice.speak("無法解讀圖片")
+            return {"reply": "無法解讀圖片", "text": payload.text}
+
+        result = vision_analyzer.send_photo(frame)
+        if result:
+            voice.speak(f"已找到商品：{result}")
+            return {"reply": f"已找到商品：{result}", "text": payload.text, "photo_result": result}
+        else:
+            voice.speak("無法辨識商品，請稍後再試")
+            return {"reply": "無法辨識商品", "text": payload.text}
+
+    except Exception as e:
+        print(f"[📸 拍照處理失敗] {e}")
+        voice.speak("圖片處理失敗")
+        return {"reply": f"處理失敗：{str(e)}", "text": payload.text}
 
 @app.post("/api/command_audio")
 async def process_audio_command(request: Request):
     """
     (新版) 接收前端純 JS 編碼的 WAV 音軌二進制檔案，後端直接送 Google STT
+    若語音包含「拍照」，則拍攝無壓縮圖片傳送給 OpenClaw 進行商品辨識
     """
     audio_data = await request.body()
     print(f"\n[⬇️ 伺服器收到純音訊] 大小: {len(audio_data)} bytes")
-    
+
     import speech_recognition as sr
     import io
-    
+
     recognizer = sr.Recognizer()
     try:
         with sr.AudioFile(io.BytesIO(audio_data)) as source:
             audio = recognizer.record(source)
             text = recognizer.recognize_google(audio, language="zh-TW")
-            
+
             print(f"\n" + "!"*40)
             print(f"[🔴 後端錄音直出解析結果] 🗣️: {text}")
             print("!"*40 + "\n")
-            
-            voice.speak(f"收到指令：{text}")
-            return {"reply": f"系統收到指令：{text}", "text": text}
+
+            # 檢查是否包含「拍照」關鍵字
+            if "拍照" in text or "拍一張" in text:
+                print("[📸 偵測到拍照指令] 請發送截圖...")
+                voice.speak("收到，請發送截圖")
+                return {"reply": "收到拍照指令，請發送截圖", "text": text, "need_photo": True}
+            else:
+                # 一般指令
+                voice.speak(f"收到指令：{text}")
+                return {"reply": f"系統收到指令：{text}", "text": text}
+
     except sr.UnknownValueError:
         print("[🔴 後端辨識失敗] 聽不清楚或沒有講話")
         return {"reply": "聽不清楚，請再講一次", "text": ""}

@@ -17,7 +17,7 @@ class VisionAnalyzer:
     OpenClaw Vision 分析器
     自動選擇最快的可用方式：WebSocket RPC > HTTP REST
     """
-    
+
     def __init__(self,
                  gateway_url: str = "ws://127.0.0.1:18789",
                  http_url: str = "http://127.0.0.1:18789",
@@ -34,7 +34,46 @@ class VisionAnalyzer:
     
     def _test_connections(self):
         """測試兩種連線方式，找出可用的"""
-        # 先測 HTTP REST（簡單快速）
+        self._method = None
+
+        # 優先測試 WebSocket RPC（較可靠）
+        try:
+            import websocket
+            ws = websocket.WebSocket()
+            ws.settimeout(5)
+            ws.connect(self.gateway_url)
+
+            # 等待 challenge
+            challenge_raw = ws.recv()
+            challenge = json.loads(challenge_raw)
+            nonce = challenge['payload']['nonce']
+
+            # 發送 connect（client.id 必須是 "cli"）
+            connect_req = {
+                "type": "req", "id": "c1", "method": "connect",
+                "params": {
+                    "minProtocol": 3, "maxProtocol": 3,
+                    "client": {"id": "cli", "version": "1.0", "platform": "windows", "mode": "cli"},
+                    "role": "operator",
+                    "scopes": ["operator.read", "operator.write"],
+                    "caps": [], "commands": [], "permissions": {},
+                    "auth": {"token": self.token},
+                    "locale": "zh-TW",
+                    "userAgent": "openclaw-cli/1.0"
+                }
+            }
+            ws.send(json.dumps(connect_req))
+            hello = ws.recv()
+
+            self.ws = ws
+            self._ws_connected = True
+            self._method = "websocket"
+            logger.info("WebSocket RPC: connected successfully")
+            return
+        except Exception as e:
+            logger.warning(f"WebSocket test failed: {e}")
+
+        # HTTP REST 備用（注意：路徑可能不正確，需要確認）
         try:
             import requests
             resp = requests.get(
@@ -48,44 +87,7 @@ class VisionAnalyzer:
                 return
         except Exception as e:
             logger.warning(f"HTTP REST test failed: {e}")
-        
-        # 測 WebSocket RPC
-        try:
-            import websocket
-            ws = websocket.WebSocket()
-            ws.settimeout(5)
-            ws.connect(self.gateway_url)
-            
-            # 等待 challenge
-            challenge_raw = ws.recv()
-            challenge = json.loads(challenge_raw)
-            nonce = challenge['payload']['nonce']
-            
-            # 發送 connect
-            connect_req = {
-                "type": "req", "id": "c1", "method": "connect",
-                "params": {
-                    "minProtocol": 3, "maxProtocol": 3,
-                    "client": {"id": "vision", "version": "1.0", "platform": "windows", "mode": "operator"},
-                    "role": "operator",
-                    "scopes": ["operator.read", "operator.write"],
-                    "caps": [], "commands": [], "permissions": {},
-                    "auth": {"token": self.token},
-                    "locale": "zh-TW",
-                    "userAgent": "vision-nav/1.0"
-                }
-            }
-            ws.send(json.dumps(connect_req))
-            hello = ws.recv()
-            
-            self.ws = ws
-            self._ws_connected = True
-            self._method = "websocket"
-            logger.info("WebSocket RPC: connected successfully")
-            return
-        except Exception as e:
-            logger.warning(f"WebSocket test failed: {e}")
-        
+
         self._method = None
         logger.error("All connection methods failed")
     
@@ -107,22 +109,22 @@ class VisionAnalyzer:
             logger.error("No working connection method")
             return None
     
-    def _analyze_http(self, b64_image: str, prompt: str) -> Optional[str]:
+    def _analyze_http(self, b64_image: str, prompt: str, media_type: str = "image/jpeg") -> Optional[str]:
         """HTTP REST 方式（可能需要調整格式）"""
         import requests
-        
+
         payload = {
             "model": self.model,
             "messages": [{
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                    {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64_image}"}}
                 ]
             }],
             "stream": False
         }
-        
+
         try:
             resp = requests.post(
                 f"{self.http_url}/v1/chat/completions",
@@ -131,7 +133,7 @@ class VisionAnalyzer:
                     "Content-Type": "application/json"
                 },
                 json=payload,
-                timeout=20
+                timeout=30
             )
             logger.info(f"HTTP Response: {resp.status_code} — {resp.text[:300]}")
             resp.raise_for_status()
@@ -139,15 +141,18 @@ class VisionAnalyzer:
         except Exception as e:
             logger.error(f"HTTP analysis failed: {e}")
             return None
-    
-    def _analyze_ws(self, b64_image: str, prompt: str) -> Optional[str]:
+
+    def _analyze_ws(self, b64_image: str, prompt: str, media_type: str = "image/jpeg") -> Optional[str]:
         """WebSocket RPC 方式（原生協定，成功率最高）"""
         import websocket
-        
+
         try:
             if not self._ws_connected or self.ws is None:
                 self._test_connections()
-            
+                if not self._ws_connected:
+                    logger.error("WebSocket not connected")
+                    return None
+
             req_id = f"v-{int(time.time()*1000)}"
             msg = {
                 "type": "req", "id": req_id,
@@ -156,10 +161,10 @@ class VisionAnalyzer:
                     "prompt": prompt,
                     "model": self.model,
                     "imageBase64": b64_image,
-                    "imageMediaType": "image/jpeg"
+                    "imageMediaType": media_type
                 }
             }
-            
+
             self.ws.send(json.dumps(msg))
             
             # 等回應（最多 20 秒）
@@ -189,13 +194,75 @@ class VisionAnalyzer:
             self._ws_connected = False
             return None
     
+    def send_photo(self, frame: np.ndarray) -> Optional[str]:
+        """
+        拍照模式：傳送無壓縮圖片到 OpenClaw，要求使用 product-shopper skill
+        辨識商品並搜尋蝦皮
+        """
+        if frame is None:
+            return None
+
+        # 無壓縮 PNG（不用 JPEG 壓縮）
+        _, buffer = cv2.imencode('.png', frame)
+        b64_image = base64.b64encode(buffer).decode('utf-8')
+
+        prompt = """你是一個商品辨識專家。請仔細看這張圖片中的商品，然後：
+
+1. 描述商品名稱、品牌和特徵（顏色、尺寸、包裝等）
+2. 搜尋「site:shopee.com.tw [商品名稱]」找出蝦皮上的商品資訊
+3. 返回：商品名稱、價格、評價、購買連結
+
+請用繁體中文回覆。"""
+
+        # 直接使用 openclaw agent CLI 送到 main session（CLI 有完整的 operator.write scope）
+        try:
+            import subprocess
+            import tempfile
+            import os
+
+            # 將圖片寫入暫存檔
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+                f.write(buffer.tobytes())
+                temp_path = f.name
+
+            # 使用 openclaw agent CLI 送到 main session
+            # 會自動透過 gateway 處理，不需要 scope
+            cmd = f'openclaw agent --session-id "2f20c0e8-8d35-4388-8d5d-26ffd69910f1" --message "請分析這張圖片中的商品並搜尋蝦皮。圖片路徑：{temp_path}" --thinking high --timeout 90'
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=90,
+                shell=True,
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                encoding='utf-8',
+                errors='replace'
+            )
+
+            # 清理暫存檔
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+
+            if result.returncode == 0:
+                return result.stdout
+            else:
+                logger.error(f"openclaw agent failed: {result.stderr}")
+                return None
+
+        except Exception as e:
+            logger.error(f"CLI fallback failed: {e}")
+            return None
+
     def close(self):
         if self.ws:
             try: self.ws.close()
             except: pass
             self.ws = None
             self._ws_connected = False
-    
+
     def __del__(self):
         self.close()
 
