@@ -1,7 +1,7 @@
 # Vision-Aided AR Navigation Agent
 
 智慧視障輔助導航系統，使用 OpenCV + OpenClaw AI Agent 為視障者與銀髮族提供環境感知與安全導航。
-git pull origin main
+SKILL.md和_meta.json要放進openclaw的skills資料夾
 ## 特色
 
 - 🎥 即時影像障礙物偵測
