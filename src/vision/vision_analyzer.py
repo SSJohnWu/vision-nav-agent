@@ -194,66 +194,74 @@ class VisionAnalyzer:
             self._ws_connected = False
             return None
     
-    def send_photo(self, frame: np.ndarray) -> Optional[str]:
+    def send_photo(self, frame: np.ndarray) -> Optional[dict]:
         """
-        拍照模式：傳送無壓縮圖片到 OpenClaw，要求使用 product-shopper skill
-        辨識商品並搜尋蝦皮
+        拍照模式：傳送圖片到 OpenClaw，要求使用 product-shopper skill
+        辨識商品並搜尋蝦皮。直接用 HTTP API 處理（openclaw agent CLI 會卡住）
+        返回結構化結果（dict）
         """
         if frame is None:
             return None
 
-        # 無壓縮 PNG（不用 JPEG 壓縮）
-        _, buffer = cv2.imencode('.png', frame)
+        # 【優化】用 JPEG 壓縮（0.85 quality），視覺足夠且傳輸更快
+        _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         b64_image = base64.b64encode(buffer).decode('utf-8')
 
-        prompt = """你是一個商品辨識專家。請仔細看這張圖片中的商品，然後：
+        prompt = """你是一個商品辨識專家。請看這張圖片中的商品，然後：
 
-1. 描述商品名稱、品牌和特徵（顏色、尺寸、包裝等）
+1. 詳細描述商品名稱、品牌和特徵（顏色、尺寸、包裝等）
 2. 搜尋「site:shopee.com.tw [商品名稱]」找出蝦皮上的商品資訊
-3. 返回：商品名稱、價格、評價、購買連結
+3. 返回以下 JSON 格式（請確保是有效 JSON）：
+{
+  "product_name": "商品名稱",
+  "price": "價格",
+  "reviews": "評價",
+  "link": "購買連結",
+  "summary": "一句話商品描述"
+}
 
-請用繁體中文回覆。"""
+請用繁體中文回覆，只返回 JSON，不要有額外解釋。"""
 
-        # 直接使用 openclaw agent CLI 送到 main session（CLI 有完整的 operator.write scope）
+        # 【關鍵改變】直接用 HTTP API 處理，不走 CLI（CLI 會卡住）
+        import requests
+
+        payload = {
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                ]
+            }],
+            "stream": False
+        }
+
         try:
-            import subprocess
-            import tempfile
-            import os
-
-            # 將圖片寫入暫存檔
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
-                f.write(buffer.tobytes())
-                temp_path = f.name
-
-            # 使用 openclaw agent CLI 送到 main session
-            # 會自動透過 gateway 處理，不需要 scope
-            cmd = f'openclaw agent --session-id "2f20c0e8-8d35-4388-8d5d-26ffd69910f1" --message "請分析這張圖片中的商品並搜尋蝦皮。圖片路徑：{temp_path}" --thinking high --timeout 90'
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=90,
-                shell=True,
-                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                encoding='utf-8',
-                errors='replace'
+            print(f"\n[📸 send_photo] 開始商品辨識 via HTTP API...")
+            resp = requests.post(
+                f"{self.http_url}/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=45
             )
+            resp.raise_for_status()
+            raw_content = resp.json()['choices'][0]['message']['content']
+            print(f"[📸 send_photo] API 回覆：{raw_content[:300]}")
 
-            # 清理暫存檔
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-
-            if result.returncode == 0:
-                return result.stdout
+            # 嘗試解析 JSON 回傳
+            import re
+            json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
             else:
-                logger.error(f"openclaw agent failed: {result.stderr}")
-                return None
+                return {"raw": raw_content}
 
         except Exception as e:
-            logger.error(f"CLI fallback failed: {e}")
+            logger.error(f"send_photo HTTP failed: {e}")
             return None
 
     def close(self):

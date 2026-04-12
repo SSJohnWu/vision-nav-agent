@@ -95,8 +95,35 @@ async def process_photo_command(payload: PhotoCommandPayload):
 
         result = vision_analyzer.send_photo(frame)
         if result:
-            voice.speak(f"已找到商品：{result}")
-            return {"reply": f"已找到商品：{result}", "text": payload.text, "photo_result": result}
+            # 【優化】根據不同回傳格式調整回覆內容
+            if isinstance(result, dict) and "product_name" in result:
+                summary = result.get("summary", "")
+                price = result.get("price", "")
+                reply = f"已找到商品：{result['product_name']}，價格{price}元，{summary}"
+            elif isinstance(result, dict) and "raw" in result:
+                reply = f"已找到商品：{result['raw']}"
+            else:
+                reply = f"已找到商品：{result}"
+
+            voice.speak(reply)
+
+            # 【修復】發送到 Telegram
+            # openclaw CLI 會因為輸出 Unicode emoji 而卡住，故用 start /b 在背景執行
+            import os
+            try:
+                telegram_msg = (
+                    f"🛒 已找到商品：{result.get('product_name', reply)}\n"
+                    f"💰 價格：{result.get('price', '未知')}元\n"
+                    f"⭐ 評價：{result.get('reviews', '未知')}\n"
+                    f"🔗 購買連結：{result.get('link', '無')}"
+                )
+                # 使用 start /b 在背景執行，不等待輸出，避免 Unicode 编码卡住
+                cmd = f'start /b /wait cmd.exe /c openclaw message send --channel telegram --target "8603543691" --message "{telegram_msg}"'
+                os.system(cmd)
+            except Exception as te:
+                print(f"[📸 Telegram 發送失敗] {te}")
+
+            return {"reply": reply, "text": payload.text, "photo_result": result}
         else:
             voice.speak("無法辨識商品，請稍後再試")
             return {"reply": "無法辨識商品", "text": payload.text}

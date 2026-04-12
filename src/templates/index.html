@@ -301,12 +301,11 @@
             isAnalyzing = true;
             statusText.innerText = "📸 拍攝中...";
 
-            // 截圖（保持高解析度）
+            // 【優化】使用 JPEG 0.9 quality（足夠清晰且比 PNG 小 10-20 倍）
             canvas.width = video.videoWidth || 640;
             canvas.height = video.videoHeight || 480;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-            const dataUrl = canvas.toDataURL('image/png', 1.0);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
             const base64Data = dataUrl.split(',')[1];
 
             try {
